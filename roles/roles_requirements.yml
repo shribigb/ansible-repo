@@ -1,0 +1,52 @@
+- src: git+https://github.com/yetu/ansible-apt.git
+  version: "v0.1.4"
+  name: ansible-apt
+
+- src: git+https://github.com/yetu/ansible-hostname.git
+  version: "v0.1.2"
+  name: ansible-hostname
+
+- src: git+https://github.com/Stouts/Stouts.sudo.git
+  version: "1.0.0"
+
+- src: git+https://github.com/ANXS/openssh.git
+  version: "v1.0.1"
+  name: ANXS.openssh
+
+- src: git+https://github.com/knopki/ansible-locale.git
+  version: "v1.0.3"
+  name: knopki.locale
+
+- src: git+https://github.com/shribigb/ansible-elasticsearch.git
+#  version: "6.x"
+  name: ansible-elasticsearch
+
+- src: git+https://github.com/AutomationWithAnsible/ansible-nginx.git
+  version: "v1.0.3"
+  name: ansible-nginx
+
+- src: git+https://github.com/shribigb/ansible-dse
+#  version: ""
+  name: ansible-dse
+
+- src: git+https://github.com/shribigb/ansible-mongodb.git
+  name: ansible-mongodb
+
+- src: git+https://github.com/ANXS/postgresql.git
+  version: "v1.5.0"
+  name: ANXS.postgresql
+
+- src: git+https://github.com/ansiblebit/oracle-java
+  name: oracle-java
+
+- src: git+https://github.com/AerisCloud/ansible-disk.git
+  name: ansible-disk
+
+- src: https://github.com/shribigb/ansible-role-logstash.git
+  name: ansible-logstash
+
+- src: https://github.com/shribigb/ansible-role-kibana.git
+  name: ansible-kibana
+
+- src: https://github.com/weareinteractive/ansible-openssl.git
+  name: ansible-openssl

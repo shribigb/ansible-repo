@@ -1,0 +1,37 @@
+---
+logstash_listen_port_beats: 5044
+
+logstash_elasticsearch_hosts:
+  - http://localhost:9200
+
+logstash_install_input_output: true
+logstash_install_plugins: []
+logstash_enable_xpack: true
+logstash_ssl: false
+logstash_ssl_dir: /etc/pki/logstash
+logstash_ssl_certificate_authority: ""
+logstash_ssl_certificate_file: ""
+logstash_ssl_key_file: ""
+
+logstash_enabled_on_boot: yes
+logstash_heap_size: 1g
+
+logstash_major_version: "6.x"
+logstash_version: "6.1.0"
+logstash_xpack_monitoring_enable: false
+logstash_xpack_management_enable: false
+logstash_management_pipeline_id_list: []
+logstash_system_username: logstash_system
+logstash_system_password: changeme
+logstash_admin_username: logstash_admin_user
+logstash_admin_password: changeme
+logstash_index_pattern: "%{[@metadata][beat]}-%{+YYYY.MM.dd}"
+
+logstash_path_data: /var/lib/logstash
+logstash_path_log: /var/log/logstash
+
+logstash_install_dictionary: false
+
+logstash_extra_conf_options: {
+
+}

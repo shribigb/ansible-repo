@@ -1,0 +1,46 @@
+---
+
+- include_vars: "{{ ansible_distribution }}.yml"
+#- name: Include installation on Debian-based OS
+#  include: install.deb.yml
+#  when: ansible_os_family == 'Debian'
+#  tags: [mongodb]
+
+
+- name: Include Linux system optimization
+  include: system_optimization.yml
+  tags: [system]
+
+- include: "{{ ansible_distribution }}/install.yml"
+  tags: [mongodb]
+
+- name: Include configuration.yml
+  include: configure.yml
+  tags: [mongodb]
+
+- name: Include replication and auth configuration
+  include: replication_init_auth.yml
+  when: ( mongodb_replication_replset
+        and mongodb_replication_replset != ''
+        and mongodb_security_authorization == 'enabled'
+        and mongodb_master is defined and mongodb_master )
+  tags: [mongodb]
+
+- name: Include replication configuration
+  include: replication.yml
+  when: ( mongodb_replication_replset 
+        and mongodb_replication_replset != ''
+        and mongodb_security_authorization == 'disabled'
+        and mongodb_master is defined and mongodb_master )
+  tags: [mongodb]
+
+- name: Include user creation
+  include: create_users.yml
+  when: mongodb_security_authorization == 'enabled'
+  tags: [mongodb]
+
+- name: Install Automation Agent
+  include: automation_agent.yml
+  when: mongodb_mms_api_key != ""
+  tags: [mongodb]
+

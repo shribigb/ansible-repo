@@ -1,0 +1,47 @@
+---
+- name: Create Logstash configuration files.
+  template:
+    src: "{{ item }}.j2"
+    dest: "/etc/logstash/conf.d/{{ item }}"
+    owner: logstash
+    group: logstash
+    mode: 0644
+  with_items:
+    - 30-elasticsearch-output.conf
+  when: logstash_install_input_output
+  notify: restart logstash
+
+- name: Install logstash.yml
+  template:
+    src: logstash.yml.j2
+    dest: "/etc/logstash/logstash.yml"
+    force: yes
+    owner: logstash
+    group: logstash
+    mode: 0644
+
+- name: Install jvm.options
+  template:
+    src: jvm.options.j2
+    dest: "/etc/logstash/jvm.options"
+    force: yes
+    owner: logstash
+    group: logstash
+    mode: 0644
+
+- name: Set LS_HOSTNAME
+  template:
+    src: logstash.j2
+    dest: "/etc/default/logstash"
+    force: yes
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Install logstash files in conf.d
+  copy: src="{{ logstash_conf_src_path }}/" dest=/etc/logstash/conf.d/ remote_src=no directory_mode=yes
+  when: logstash_install_conf == true
+
+- name: Install dictionary files
+  copy: src="{{ logstash_dictionary_src_path }}/" dest="{{logstash_dictionary_dst_path}}" remote_src=no directory_mode=yes
+  when: logstash_install_dictionary

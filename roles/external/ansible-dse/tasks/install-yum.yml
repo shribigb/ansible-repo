@@ -1,0 +1,12 @@
+---
+- name: Adding the DataStax Community repository
+  yum_repository:
+    baseurl: 'http://{{dse_yum_username}}:{{dse_yum_password}}@{{dse_yum_repo}}'
+    enabled: yes
+    gpgcheck: no
+    name: datastax
+    description: "DataStax Repo for Apache Cassandra"
+- name: Install Cassandra
+  yum:
+    name: '{{dse_yum_pkg}}'
+    state: installed

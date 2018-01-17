@@ -1,0 +1,631 @@
+  - hosts: '{{cluster_name}}'
+    become: yes
+    gather_facts: yes
+    tasks:
+      - name: Make sure unzip is installed on all the hosts
+        yum:
+          name: unzip
+          state: latest
+
+  - hosts: '{{ cluster_name }}_elasticsearch_monitoring'
+    become: yes
+    gather_facts: yes
+    pre_tasks:
+      - name: Stat /usr/share/elasticsearch
+        stat: path=/usr/share/elasticsearch
+        register: p
+
+      - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+        file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+        when: p.stat.isdir is defined and p.stat.isdir
+
+      - name: Make sure unzip is installed on all the hosts
+        yum:
+          name: unzip
+          state: latest
+    roles:
+        - { role: ansible-elasticsearch, es_instance_name: "monitor", es_data_dirs: "{{ all_data | replace('\n', '') | replace(' ', '')}}" }
+        - { role: ansible-kibana }
+    vars:
+      es_config_1: {
+       cluster.name: "{{ cluster_name }}_monitoring",
+       discovery.zen.ping.unicast.hosts: '{{ ansible_eth0["ipv4"]["address"] }}',
+       http.port: 9200,
+       transport.tcp.port: 9300,
+       node.data: true,
+       node.master: true,
+       node.name: "{{ansible_hostname}}",
+       discovery.zen.minimum_master_nodes: 1,
+       http.max_content_length: 1024mb,
+       http.cors.enabled: true,
+       http.cors.allow-origin: "/.*/",
+       indices.fielddata.cache.size: 25%,
+       action.destructive_requires_name: true,
+       network.host: [_site_,_local_],
+       bootstrap.memory_lock: true,
+       xpack.security.authc.realms.file1.type: file,
+       xpack.security.authc.realms.file1.order: 0,
+       xpack.security.authc.realms.native1.type: native,
+       xpack.security.authc.realms.native1.order: 1,
+       xpack.ssl.key: "/etc/elasticsearch/monitor/certs/${node.name}/${node.name}.key",
+       xpack.ssl.certificate: "/etc/elasticsearch/monitor/certs/${node.name}/${node.name}.crt",
+       xpack.ssl.certificate_authorities: /etc/elasticsearch/monitor/certs/ca/ca.crt,
+       xpack.security.transport.ssl.enabled: true,
+       node: {},
+       cluster: {},
+       path: {} }
+
+      es_config: "{{ es_config_1| combine(es_config_group) }}"
+      es_scripts: false
+      es_templates: false
+      es_version_lock: false
+      es_major_version: "6.x"
+      es_version: "6.1.0"
+      es_start_service: false
+      heap_memory: |
+          {% if ansible_memory_mb.real.total/2 > 31000 %}
+              30g
+          {% else %}
+              {{ ansible_memory_mb.real.total//2048 }}g
+          {% endif %}
+      es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '') }}"
+      master_group_name: '{{ cluster_name }}_elasticsearch_master'
+      all_masters: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[master_group_name] -%}
+                 {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+               {%- endfor -%}
+      all_data: |
+               {% set comma = joiner(',') %}
+               {% for mounts in ansible_mounts -%}
+                  {% if mounts.mount != '/' %}
+                    {{ comma() }}{{ mounts.mount | replace('\n', '') | replace(' ', '') }}
+                  {% endif %}
+               {%- endfor -%}
+      monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+      monitoring_host_name: |
+                {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                  {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+                {% else %}
+                  '{{ ansible_eth0["ipv4"]["address"] }}'
+                {% endif %}
+      es_plugins_reinstall: false
+      es_enable_xpack: true
+      es_api_basic_auth_username: elastic
+      es_api_basic_auth_password: '{{ admin_pass }}'
+      es_xpack_features:
+        - alerting
+        - monitoring
+        - graph
+        - security
+        - ml
+      kibana_elasticsearch_username: kibana
+      kibana_elasticsearch_password: '{{ kibana_pass }}'
+      kibana_major_version: "6.x"
+      kibana_version: "6.1.0"
+      kibana_enable_xpack: true
+
+    tasks:
+      - name: Get list of hosts
+        set_fact:
+          instances:  "{{ instances|default([]) + [ {'ip': [ hostvars[item].ansible_default_ipv4.address], 'dns': [hostvars[item].ansible_hostname], 'name': hostvars[item].ansible_hostname } ] }}"
+        with_items: "{{ groups[cluster_name]}}"
+
+      - name: Set the list in instances
+        set_fact:
+          instances2: "{ 'instances': {{instances}} }"
+
+      - copy: content="{{  instances2 | to_nice_yaml( width=50, explicit_start=True, explicit_end=True) }}" dest=/tmp/instances.yml
+
+      - name: stat certificate-bundle.zip
+        stat: path=/tmp/certificate-bundle.zip
+        register: cert_stat
+
+      - name: Move certificate-bundle.zip
+        command: mv /tmp/certificate-bundle.zip /tmp/certificate-bundle.zip.bkp
+        when: cert_stat.stat.exists
+
+      - name: create certificates for all nodes
+        command: >
+            {{es_home}}/bin/x-pack/certgen -in /tmp/instances.yml -out /tmp/certificate-bundle.zip
+        environment:
+          ES_PATH_CONF: "{{ conf_dir }}"
+
+      - name: SCP certificate-bundle.zip to local
+        fetch:
+          src: /tmp/certificate-bundle.zip
+          dest: /tmp/
+          flat: yes
+
+      - name: Create certs directory
+        file:
+          path: /etc/elasticsearch/monitor/certs
+          state: directory
+          owner: root
+          group: root
+
+      - name: Unzip certificate-bundle.zip to /etc/elasticsearch/certs
+        unarchive:
+          src: /tmp/certificate-bundle.zip
+          dest: /etc/elasticsearch/monitor/certs
+          owner: root
+          group: root
+          mode: 0655
+
+      - name: Restart Elasticsearch Service
+        service:
+          state: restarted
+          enabled: yes
+          name: monitor_elasticsearch
+
+      - name: Wait for Elasticsearch to restart
+        pause:
+          seconds: 30
+
+      - name: Create remote monitoring user
+        uri:
+          url: http://{{es_api_host}}:{{es_api_port}}/_xpack/security/user/remote_monitor
+          method: POST
+          user: "{{es_api_basic_auth_username}}"
+          password: "{{es_api_basic_auth_password}}"
+          force_basic_auth: yes
+          status_code: 200
+          body_format: json
+          body: "{ \"password\":\"{{monitor_pass}}\", \"roles\" : [ \"remote_monitoring_agent\"], \"full_name\" : \"Internal Agent For Remote Monitoring\" }"
+
+      - name: Reset kibana password user
+        uri:
+          url: http://{{es_api_host}}:{{es_api_port}}/_xpack/security/user/kibana/_password
+          method: POST
+          user: "{{es_api_basic_auth_username}}"
+          password: "{{es_api_basic_auth_password}}"
+          force_basic_auth: yes
+          status_code: 200
+          body_format: json
+          body: "{ \"password\":\"{{kibana_pass}}\" }"
+
+
+  - hosts: '{{ cluster_name }}_elasticsearch_master'
+    become: yes
+    pre_tasks:
+      - name: Stat /usr/share/elasticsearch
+        stat: path=/usr/share/elasticsearch
+        register: p
+
+      - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+        file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+        when: p.stat.isdir is defined and p.stat.isdir
+
+      - name: Create certs directory
+        file:
+          path: /etc/elasticsearch/master/certs
+          state: directory
+          owner: root
+          group: root
+
+      - name: Unzip certificate-bundle.zip to /etc/elasticsearch/master/certs
+        unarchive:
+          src: /tmp/certificate-bundle.zip
+          dest: /etc/elasticsearch/master/certs
+          owner: root
+          group: root
+          mode: 0655
+
+    roles:
+      - { role: ansible-elasticsearch, es_instance_name: "master" }
+    vars:
+      es_config_1: {
+        cluster.name: "{{ cluster_name }}",
+        discovery.zen.ping.unicast.hosts: "{{ all_masters | replace('\n', '') }}",
+        http.port: 9200,
+        transport.tcp.port: 9300,
+        node.data: false,
+        node.master: true,
+        node.name: "{{ansible_hostname}}",
+        http.max_content_length: 1024mb,
+        http.cors.enabled: true,
+        http.cors.allow-origin: "/.*/",
+        discovery.zen.minimum_master_nodes: 2,
+        indices.fielddata.cache.size: 25%,
+        action.destructive_requires_name: true,
+        network.host: [_site_,_local_],
+        bootstrap.memory_lock: true,
+        xpack.ssl.key: "/etc/elasticsearch/master/certs/${node.name}/${node.name}.key",
+        xpack.ssl.certificate: "/etc/elasticsearch/master/certs/${node.name}/${node.name}.crt",
+        xpack.ssl.certificate_authorities: /etc/elasticsearch/master/certs/ca/ca.crt,
+        xpack.security.transport.ssl.enabled: true,
+        xpack.monitoring.exporters.id1.type: http,
+        xpack.security.authc.realms.native1.type: native,
+        xpack.security.authc.realms.native1.order: 1,
+        xpack.monitoring.exporters.id1.host: "{{monitoring_host_name | replace('\n', '') | replace(' ', '')}}",
+        xpack.monitoring.exporters.id1.auth.username: remote_monitor,
+        xpack.monitoring.exporters.id1.auth.password: "{{monitor_pass}}",
+        xpack.monitoring.exporters.id1.ssl.certificate_authorities: [ "/etc/elasticsearch/master/certs/ca/ca.crt" ],
+        xpack.security.authc.realms.file1.type: file,
+        xpack.security.authc.realms.file1.order: 0,
+        node: {},
+        cluster: {},
+        path: {} }
+      es_config: "{{es_config_1| combine(es_config_group)}}"
+      es_scripts: false
+      es_templates: false
+      es_version_lock: false
+      es_major_version: "6.x"
+      es_version: "6.1.0"
+      es_start_service: true
+      heap_memory: |
+          {% if ansible_memory_mb.real.total/2 > 31000 %}
+              30g
+          {% else %}
+              {{ ansible_memory_mb.real.total//2048 }}g
+          {% endif %}
+      es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '') }}"
+      es_service_name: "{{ group_names[0] | regex_replace('^.*_(.*)$', '\\1') }}_elasticsearch"
+      master_group_name: '{{ cluster_name }}_elasticsearch_master'
+      all_masters: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[master_group_name] -%}
+                 {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+               {%- endfor -%}
+      monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+      monitoring_host_name: |
+                {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                  {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+                {% else %}
+                  {{ ansible_eth0["ipv4"]["address"] }}
+                {% endif %}
+      es_plugins_reinstall: false
+      es_enable_xpack: true
+      es_api_basic_auth_username: elastic
+      es_api_basic_auth_password: '{{ admin_pass }}'
+      es_xpack_features:
+        - alerting
+        - monitoring
+        - graph
+        - security
+        - ml
+
+
+  - hosts: '{{ cluster_name }}_elasticsearch_data'
+    become: yes
+    pre_tasks:
+      - name: Stat /usr/share/elasticsearch
+        stat: path=/usr/share/elasticsearch
+        register: p
+
+      - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+        file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+        when: p.stat.isdir is defined and p.stat.isdir
+
+      - name: Create certs directory
+        file:
+          path: /etc/elasticsearch/data/certs
+          state: directory
+          owner: root
+          group: root
+
+      - name: Unzip certificate-bundle.zip to /etc/elasticsearch/certs
+        unarchive:
+          src: /tmp/certificate-bundle.zip
+          dest: /etc/elasticsearch/data/certs
+          owner: root
+          group: root
+          mode: 0655
+
+    roles:
+      - { role: ansible-elasticsearch, es_instance_name: "data", es_data_dirs: "{{ all_data | replace('\n', '') | replace(' ', '')}}"}
+    vars:
+      es_config_1: {
+        discovery.zen.ping.unicast.hosts: "{{ all_masters | replace('\n', '') }}",
+        http.port: 9200,
+        transport.tcp.port: 9300,
+        node.data: true,
+        node.master: false,
+        node.name: "{{ansible_hostname}}",
+        bootstrap.memory_lock: true,
+        http.max_content_length: 1024mb,
+        http.cors.enabled: true,
+        discovery.zen.minimum_master_nodes: 2,
+        http.cors.allow-origin: "/.*/",
+        indices.fielddata.cache.size: 25%,
+        action.destructive_requires_name: true,
+        node.attr.box_type: '{{ es_box_type }}',
+        cluster.name: "{{ cluster_name }}",
+        network.host: [_site_,_local_],
+        xpack.security.authc.realms.native1.type: native,
+        xpack.security.authc.realms.native1.order: 1,
+        xpack.ssl.key: "/etc/elasticsearch/data/certs/${node.name}/${node.name}.key",
+        xpack.ssl.certificate: "/etc/elasticsearch/data/certs/${node.name}/${node.name}.crt",
+        xpack.ssl.certificate_authorities: /etc/elasticsearch/data/certs/ca/ca.crt,
+        xpack.security.transport.ssl.enabled: true,
+        xpack.monitoring.exporters.id1.type: http,
+        xpack.monitoring.exporters.id1.host: "{{monitoring_host_name | replace('\n', '') | replace(' ', '')}}",
+        xpack.monitoring.exporters.id1.auth.username: remote_monitor,
+        xpack.monitoring.exporters.id1.auth.password: "{{monitor_pass}}",
+        xpack.monitoring.exporters.id1.ssl.certificate_authorities: [ "/etc/elasticsearch/data/certs/ca/ca.crt" ],
+        xpack.security.authc.realms.file1.type: file,
+        xpack.security.authc.realms.file1.order: 0,
+        node: {},
+        cluster: {},
+        path: {} }
+      es_box_type: strong
+      es_config: "{{es_config_1| combine(es_config_group| default({}))}}"
+      es_scripts: false
+      es_templates: false
+      es_major_version: "6.x"
+      es_version: "6.1.0"
+      es_version_lock: false
+      es_start_service: true
+      heap_memory: |
+          {% if ansible_memory_mb.real.total/2 > 31000 %}
+              30g
+          {% else %}
+              {{ ansible_memory_mb.real.total//2048 }}g
+          {% endif %}
+      es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '') }}"
+      master_group_name: '{{ cluster_name }}_elasticsearch_master'
+      all_masters: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[master_group_name] -%}
+                 {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+               {%- endfor -%}
+      all_data: |
+               {% set comma = joiner(',') %}
+               {% for mounts in ansible_mounts -%}
+                  {% if mounts.mount != '/' %}
+                    {{ comma() }}{{ mounts.mount | replace('\n', '') | replace(' ', '') }}
+                  {% endif %}
+               {%- endfor -%}
+      monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+      monitoring_host_name: |
+                {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                  {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+                {% else %}
+                  '{{ ansible_eth0["ipv4"]["address"] }}'
+                {% endif %}
+      es_plugins_reinstall: false
+      es_enable_xpack: true
+      es_api_basic_auth_username: elastic
+      es_api_basic_auth_password: '{{ admin_pass }}'
+      es_xpack_features:
+        - alerting
+        - monitoring
+        - graph
+        - security
+        - ml
+
+  - hosts: '{{ cluster_name }}_elasticsearch_client'
+    become: yes
+    gather_facts: yes
+    pre_tasks:
+      - name: Stat /usr/share/elasticsearch
+        stat: path=/usr/share/elasticsearch
+        register: p
+
+      - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+        file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+        when: p.stat.isdir is defined and p.stat.isdir
+
+      - name: Create certs directory
+        file:
+          path: /etc/elasticsearch/client/certs
+          state: directory
+          owner: root
+          group: root
+
+      - name: Unzip certificate-bundle.zip to /etc/elasticsearch/client/certs
+        unarchive:
+          src: /tmp/certificate-bundle.zip
+          dest: /etc/elasticsearch/client/certs
+          owner: root
+          group: root
+          mode: 0655
+
+    roles:
+      - { role: ansible-elasticsearch, es_instance_name: "client"}
+      - { role: ansible-kibana }
+    vars:
+      es_config_1: {
+         cluster.name: "{{ cluster_name }}",
+         discovery.zen.ping.unicast.hosts: "{{ all_masters | replace('\n', '') }}",
+         http.port: 9200,
+         transport.tcp.port: 9300,
+         node.data: false,
+         node.master: false,
+         node.name: "{{ansible_hostname}}",
+         discovery.zen.minimum_master_nodes: 2,
+         http.max_content_length: 1024mb,
+         http.cors.enabled: true,
+         http.cors.allow-origin: "/.*/",
+         indices.fielddata.cache.size: 25%,
+         action.destructive_requires_name: true,
+         network.host: [_site_,_local_],
+         bootstrap.memory_lock: true,
+         xpack.ssl.key: "/etc/elasticsearch/client/certs/${node.name}/${node.name}.key",
+         xpack.ssl.certificate: "/etc/elasticsearch/client/certs/${node.name}/${node.name}.crt",
+         xpack.ssl.certificate_authorities: /etc/elasticsearch/client/certs/ca/ca.crt,
+         xpack.security.transport.ssl.enabled: true,
+         xpack.monitoring.exporters.id1.type: http,
+         xpack.security.authc.realms.native1.type: native,
+         xpack.security.authc.realms.native1.order: 1,
+         xpack.monitoring.exporters.id1.host: "{{monitoring_host_name | replace('\n', '') | replace(' ', '')}}",
+         xpack.monitoring.exporters.id1.auth.username: remote_monitor,
+         xpack.monitoring.exporters.id1.auth.password: "{{monitor_pass}}",
+         xpack.monitoring.exporters.id1.ssl.certificate_authorities: [ "/etc/elasticsearch/client/certs/ca/ca.crt" ],
+         xpack.security.authc.realms.file1.type: file,
+         xpack.security.authc.realms.file1.order: 0,
+         node: {},
+         cluster: {},
+         path: {} }
+      es_config: "{{es_config_1| combine(es_config_group)}}"
+      es_scripts: false
+      es_templates: false
+      es_version_lock: false
+      es_major_version: "6.x"
+      es_version: "6.1.0"
+      es_start_service: true
+      heap_memory: |
+          {% if ansible_memory_mb.real.total/2 > 31000 %}
+              30g
+          {% else %}
+              {{ ansible_memory_mb.real.total//2048 }}g
+          {% endif %}
+      es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '')}}"
+      master_group_name: '{{ cluster_name }}_elasticsearch_master'
+      all_masters: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[master_group_name] -%}
+                 {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+               {%- endfor -%}
+      monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+      monitoring_host_name: |
+                {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                  {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+                {% else %}
+                  '{{ ansible_eth0["ipv4"]["address"] }}'
+                {% endif %}
+      es_plugins_reinstall: false
+      es_enable_xpack: true
+      es_api_basic_auth_username: elastic
+      es_api_basic_auth_password: '{{ admin_pass }}'
+      es_xpack_features:
+        - alerting
+        - monitoring
+        - graph
+        - security
+        - ml
+      kibana_elasticsearch_username: kibana
+      kibana_elasticsearch_password: '{{ kibana_pass }}'
+      kibana_major_version: "6.x"
+      kibana_version: "6.1.0"
+      kibana_enable_xpack: true
+
+    tasks:
+      - name: Reset Kibana User Password
+        uri:
+          url: http://{{es_api_host}}:{{es_api_port}}/_xpack/security/user/kibana/_password
+          method: POST
+          user: "{{es_api_basic_auth_username}}"
+          password: "{{es_api_basic_auth_password}}"
+          force_basic_auth: yes
+          status_code: 200
+          body_format: json
+          body: "{ \"password\":\"{{kibana_pass}}\" }"
+
+  - hosts: '{{ cluster_name }}_kibana'
+    become: yes
+    gather_facts: yes
+    pre_tasks:
+      - name: Stat /usr/share/elasticsearch
+        stat: path=/usr/share/elasticsearch
+        register: p
+
+      - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+        file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+        when: p.stat.isdir is defined and p.stat.isdir
+
+      - name: Create certs directory
+        file:
+          path: /etc/elasticsearch/client/certs
+          state: directory
+          owner: root
+          group: root
+
+      - name: Unzip certificate-bundle.zip to /etc/elasticsearch/client/certs
+        unarchive:
+          src: /tmp/certificate-bundle.zip
+          dest: /etc/elasticsearch/client/certs
+          owner: root
+          group: root
+          mode: 0655
+
+    roles:
+        - { role: ansible-elasticsearch, es_instance_name: "client"}
+        - { role: ansible-kibana }
+    vars:
+      es_config_1: {
+       cluster.name: "{{ cluster_name }}",
+       discovery.zen.ping.unicast.hosts: "{{ all_masters | replace('\n', '') }}",
+       http.port: 9200,
+       transport.tcp.port: 9300,
+       node.data: false,
+       node.master: false,
+       node.name: "{{ansible_hostname}}",
+       discovery.zen.minimum_master_nodes: 2,
+       http.max_content_length: 1024mb,
+       http.cors.enabled: true,
+       http.cors.allow-origin: "/.*/",
+       indices.fielddata.cache.size: 25%,
+       action.destructive_requires_name: true,
+       network.host: [_site_,_local_],
+       bootstrap.memory_lock: true,
+       xpack.security.authc.realms.native1.type: native,
+       xpack.security.authc.realms.native1.order: 1,
+       xpack.ssl.key: "/etc/elasticsearch/client/certs/${node.name}/${node.name}.key",
+       xpack.ssl.certificate: "/etc/elasticsearch/client/certs/${node.name}/${node.name}.crt",
+       xpack.ssl.certificate_authorities: /etc/elasticsearch/client/certs/ca/ca.crt,
+       xpack.security.transport.ssl.enabled: true,
+       xpack.monitoring.exporters.id1.type: http,
+       xpack.monitoring.exporters.id1.host: "{{monitoring_host_name | replace('\n', '') | replace(' ', '')}}",
+       xpack.monitoring.exporters.id1.auth.username: remote_monitor,
+       xpack.monitoring.exporters.id1.auth.password: "{{monitor_pass}}",
+       xpack.monitoring.exporters.id1.ssl.certificate_authorities: [ "/etc/elasticsearch/client/certs/ca/ca.crt" ],
+       xpack.security.authc.realms.file1.type: file,
+       xpack.security.authc.realms.file1.order: 0,
+       node: {},
+       cluster: {},
+       path: {} }
+      es_config: "{{es_config_1| combine(es_config_group)}}"
+      es_scripts: false
+      es_templates: false
+      es_version_lock: false
+      es_major_version: "6.x"
+      es_version: "6.1.0"
+      es_start_service: true
+      heap_memory: |
+          {% if ansible_memory_mb.real.total/2 > 31000 %}
+              30g
+          {% else %}
+              {{ ansible_memory_mb.real.total//2048 }}g
+          {% endif %}
+      es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '') }}"
+      master_group_name: '{{ cluster_name }}_elasticsearch_master'
+      all_masters: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[master_group_name] -%}
+                 {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+               {%- endfor -%}
+      monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+      monitoring_host_name: |
+                {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                  {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+                {% else %}
+                  '{{ ansible_eth0["ipv4"]["address"] }}'
+                {% endif %}
+      es_plugins_reinstall: false
+      es_enable_xpack: true
+      es_api_basic_auth_username: elastic
+      es_api_basic_auth_password: '{{ admin_pass }}'
+      es_xpack_features:
+        - alerting
+        - monitoring
+        - graph
+        - security
+        - ml
+      kibana_elasticsearch_username: kibana
+      kibana_elasticsearch_password: '{{ kibana_pass }}'
+      kibana_major_version: "6.x"
+      kibana_version: "6.1.0"
+      kibana_enable_xpack: true
+
+    tasks:
+      - name: Reset kibana password user
+        uri:
+          url: http://{{es_api_host}}:{{es_api_port}}/_xpack/security/user/kibana/_password
+          method: POST
+          user: "{{es_api_basic_auth_username}}"
+          password: "{{es_api_basic_auth_password}}"
+          force_basic_auth: yes
+          status_code: 200
+          body_format: json
+          body: "{ \"password\":\"{{kibana_pass}}\" }"

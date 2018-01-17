@@ -1,0 +1,14 @@
+output {
+  elasticsearch {
+    id => "output_elasticsesearch"
+    hosts => {{ logstash_elasticsearch_hosts | to_json }}
+    index => "{{ logstash_index_pattern }}"
+    document_type => "{{ logstash_document_type | default('doc')}}"
+
+    {% if logstash_index_user is defined %}
+    user => "{{ logstash_index_user }}"
+    password => "{{ logstash_index_password }}"
+    {% endif %}
+
+  }
+}

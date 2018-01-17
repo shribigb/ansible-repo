@@ -1,0 +1,5 @@
+vpass
+group_vars/extrahop
+group_vars/verizon_es
+plays/elasticsearch/conf.d
+plays/elasticsearch/dictionary

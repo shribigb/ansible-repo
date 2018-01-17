@@ -1,0 +1,31 @@
+  - hosts: '{{ cluster_name }}_elasticsearch_data'
+    become: yes
+    gather_facts: yes
+
+
+  - hosts: '{{ cluster_name }}_logstash'
+    become: yes
+    gather_facts: yes
+
+    roles:
+      - ansible-logstash
+    vars:
+        logstash_enabled_on_boot: yes
+        logstash_all_elasticsearch_group: "{{cluster_name}}_elasticsearch_data"
+        all_hosts: |
+               {% set comma = joiner(',') %}
+               {% for host in groups[logstash_all_elasticsearch_group] -%}
+                  {{ comma() }}'http://{{ hostvars[host].ansible_default_ipv4.address}}:9200'
+               {%- endfor -%}
+        logstash_elasticsearch_hosts: "[{{ all_hosts | replace('\n', '') }}]"
+        logstash_major_version: "6.x"
+        logstash_version: "6.1.0"
+        logstash_xpack_monitoring_enable: true
+        logstash_xpack_management_enable: true
+        logstash_management_pipeline_id_list: "['syslog-all','syslog-tcp','syslog-udp']"
+        logstash_heap_size: 1g
+        logstash_install_dictionary: true
+        logstash_dictionary_src_path: dictionary
+        logstash_dictionary_dst_path: /etc/logstash/dictionary
+        logstash_install_conf: true
+        logstash_conf_src_path: conf.d

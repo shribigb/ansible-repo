@@ -1,0 +1,23 @@
+- name: get facts
+  hosts: "{{ CLUSTER_NAME_ENV }}_SM {{ CLUSTER_NAME_ENV }}_TE"
+  become: yes
+  vars:
+    version: "2.5.5.1"
+  tasks:
+    - name: Debug
+      debug: msg="Cluster Name is  {{ CLUSTER_NAME_ENV }} "
+    - debug: msg="Passed  {{ WADE_SEED }} "
+#      shell:  nuodbmgr --broker hostname --password domain_password --command "apply domain license licenseFile path_to_license_file"
+<<<<<<< HEAD
+#    - s3: bucket='wade1' object=/rpm/nuodb-ce-{{ version }}.x86_64.rpm dest=/tmp/nuodb.rpm mode=get 
+#    - name: install NuoDB
+#      yum: name=/tmp/nuodb.rpm state=present 
+#    - replace: dest=/opt/nuodb/etc/default.properties regexp='#domainPassword =' replace='domainPassword=expedia' backup=yes
+#    - debug: msg="Seed {{ seed }} "
+=======
+    - s3: bucket='wade1' object=/rpm/nuodb-ce-{{ version }}.x86_64.rpm dest=/tmp/nuodb.rpm mode=get 
+    - name: install NuoDB
+      yum: name=/tmp/nuodb.rpm state=present 
+    - replace: dest=/opt/nuodb/etc/default.properties regexp='#domainPassword =' replace='domainPassword=expedia' backup=yes
+
+>>>>>>> 27b33350e57ddc8ed5eab8669ef393ffffadec17

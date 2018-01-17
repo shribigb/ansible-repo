@@ -1,0 +1,512 @@
+---
+- name: Gather Host Info
+  hosts: '{{cluster_name}}_elasticsearch_master:{{cluster_name}}_elasticsearch_data:{{cluster_name}}_elasticsearch_monitoring:{{cluster_name}}_kibana:{{cluster_name}}_elasticsearch_client'
+  gather_facts: true
+
+- name: Elasticsearch rolling upgrade master
+  hosts: '{{cluster_name}}_elasticsearch_master:{{cluster_name}}_elasticsearch_data:{{cluster_name}}_kibana:{{cluster_name}}_elasticsearch_client'
+  serial: 1
+  become: yes
+  gather_facts: true
+  vars:
+    es_disable_allocation:  '{"transient":{"cluster.routing.allocation.enable":"none"}}'
+    es_enable_allocation: '{"transient":{"cluster.routing.allocation.enable": "all"}}'
+    es_scripts: false
+    es_templates: false
+    es_version: "2.4.0"
+    es_http_port: 9200
+    es_transport_port: 9300
+    es_version_lock: false
+    es_start_service: true
+    heap_memory: |
+        {% if ansible_memory_mb.real.total/2 > 31000 %}
+            "30g"
+        {% else %}
+            {{ ansible_memory_mb.real.total//2048 }}g
+        {% endif %}
+    es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '')}}"
+    master_group_name: '{{ cluster_name }}_elasticsearch_master'
+    all_masters: |
+             {% set comma = joiner(',') %}
+             {% for host in groups[master_group_name] -%}
+               {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+             {%- endfor -%}
+    all_data: |
+             {% set comma = joiner(',') %}
+             {% for mounts in ansible_mounts -%}
+                {% if mounts.mount != '/' %}
+                  {{ comma() }}{{ mounts.mount | replace('\n', '') | replace(' ', '') }}
+                {% endif %}
+             {%- endfor -%}
+    monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+    monitoring_host_name: |
+              {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+              {% else %}
+                '{{ ansible_eth0["ipv4"]["address"] }}'
+              {% endif %}
+    es_plugins_reinstall: true
+    node_name: "{{ group_names[0] | regex_replace('^.*_(.*)$', '\\1') }}"
+    es_node_name: |
+              {% if node_name == 'kibana' %}
+                  client
+              {% else %}
+                  {{ node_name }}
+              {% endif %}
+    es_enable_xpack: true
+    es_api_basic_auth_username: es_admin
+    es_api_basic_auth_password: '{{ admin_pass }}'
+    extra_es_config:
+      shield:
+        authc:
+          anonymous:
+            authz_exception: 'true'
+            roles: admin
+            username: anonymous_user
+          realms:
+            native1:
+              type: native
+              order: '0'
+            file1:
+              type: file
+              order: '1'
+        enabled: 'false'
+      marvel:
+        agent:
+          exporters:
+            id1:
+              host: 10.2.243.192
+              type: http
+    es_plugins:
+       - plugin: shield
+       - plugin: watcher
+       - plugin: license
+       - plugin: marvel-agent
+    es_xpack_features:
+      - shield
+      - watcher
+      - license
+      - marvel-agent
+    es_users:
+      file:
+        es_admin:
+          password: '{{ admin_pass }}'
+          roles:
+            - admin
+        kibana4-server:
+          password: '{{ kibana_pass }}'
+          roles:
+            - kibana4_server
+    es_roles:
+      file:
+        kibana4_server:
+          cluster:
+            - monitor
+          indices:
+            - names: '.kibana*'
+              privileges:
+                - all
+            - names: '.reporting-*'
+              privileges:
+                - all
+        admin:
+          cluster:
+            - all
+          indices:
+            - names: '*'
+              privileges:
+                - all
+        power_user:
+          cluster:
+            - monitor
+          indices:
+            - names: '*'
+              privileges:
+                - all
+  pre_tasks:
+
+      - name: make sure elasticsearch service is running
+        service: name="{{ es_node_name | replace('\n', '') | replace(' ', '') }}_elasticsearch" enabled=yes state=started
+        register: response
+
+      # this first step is a overkill, but here
+      # in case the upgrade was cancelled by user mid playbook run
+
+      - name: Wait for elasticsearch node to come back up if it was stopped
+        wait_for: port={{ es_transport_port }} delay=45
+        when: response.changed == true
+
+      - name: Get Node attributes
+        uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }}/_nodes/{{ ansible_eth0["ipv4"]["address"] }}/settings method=GET
+        register: node_attributes
+
+      # the ansible the uri action needs httplib2
+      - name: ensure python27-httplib2 is installed
+        yum: name=python27-httplib2 state=present
+
+      - name: check current version
+        uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }} method=GET
+        register: version_found
+        retries: 10
+        delay: 10
+
+      - name: Display Current Elasticsearch Version
+        debug: var=version_found.json.version.number
+
+       # this step is key!!!  Don't restart more nodes
+       # until all shards have completed recovery
+      - name: Wait for cluster health to return to green
+        uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }}/_cluster/health method=GET
+        register: response
+        until: "response.json.status == 'green'"
+        retries: 50
+        delay: 30
+        when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+      - name: synced flush on the node
+        uri: url=http://localhost:{{ es_http_port }}/_flush/synced method=POST status_code=200,409
+        when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+      - name: Disable shard allocation for the cluster
+        uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }}/_cluster/settings method=PUT body={{ es_disable_allocation }} body_format=json
+        when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+      - name: Shutdown elasticsearch node
+        service: name="{{ node_attributes.json.nodes.values()[0].name | regex_replace('^.*-(.*)$', '\\1') }}_elasticsearch" state=stopped
+        when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+  roles:
+     - { role: ansible-elasticsearch, when: "version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}", es_instance_name: "{{ node_attributes.json.nodes.values()[0].name | regex_replace('^.*-(.*)$', '\\1') }}",
+         es_config: "{{ node_attributes.json.nodes.values()[0].settings |  combine( extra_es_config , recursive=True)  }}"
+       }
+
+  tasks:
+
+     - name: Wait for elasticsearch node to come back up
+       wait_for: port={{ es_transport_port }} delay=35
+       when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+     - name: Enable shard allocation for the cluster
+       uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }}/_cluster/settings method=PUT body={{ es_enable_allocation }} body_format=json
+       register: response
+      # next line is boolean not string, so no quotes around true
+      # use python truthiness
+       until: "response.json.acknowledged == true"
+       retries: 5
+       delay: 30
+       when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+     - name: Wait for cluster health to return to  green
+       uri: url=http://es_admin:{{admin_pass}}@localhost:{{ es_http_port }}/_cluster/health method=GET
+       register: response
+       until: "response.json.status == 'green'"
+       retries: 10
+       delay: 30
+       when: version_found.json.version.number != '{{ es_version }}' or {{ force_upgrade }}
+
+- hosts: '{{ cluster_name }}_kibana'
+  become: yes
+  gather_facts: yes
+  pre_tasks:
+    - name: Stat /usr/share/elasticsearch
+      stat: path=/usr/share/elasticsearch
+      register: p
+
+    - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+      file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+      when: p.stat.isdir is defined and p.stat.isdir
+
+  roles:
+      - ansible-kibana
+      - ansible-openssl
+
+  vars:
+    es_scripts: false
+    es_templates: false
+    es_version_lock: false
+    es_version: "2.4.0"
+    es_http_port: 9200
+    es_start_service: true
+    heap_memory: |
+        {% if ansible_memory_mb.real.total/2 > 31000 %}
+            "30g"
+        {% else %}
+            {{ ansible_memory_mb.real.total//2048 }}g
+        {% endif %}
+    es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '') }}"
+    master_group_name: '{{ cluster_name }}_elasticsearch_master'
+    all_masters: |
+             {% set comma = joiner(',') %}
+             {% for host in groups[master_group_name] -%}
+               {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+             {%- endfor -%}
+    monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+    monitoring_host_name: |
+              {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+              {% else %}
+                '{{ ansible_eth0["ipv4"]["address"] }}'
+              {% endif %}
+    es_plugins_reinstall: true
+    es_enable_xpack: true
+    es_api_basic_auth_username: es_admin
+    es_api_basic_auth_password: '{{ admin_pass }}'
+    es_plugins:
+       - plugin: shield
+       - plugin: watcher
+       - plugin: license
+       - plugin: marvel-agent
+    es_xpack_features:
+      - shield
+      - watcher
+      - license
+      - marvel-agent
+    es_users:
+      file:
+        es_admin:
+          password: '{{ admin_pass }}'
+          roles:
+            - admin
+        kibana4-server:
+          password: '{{ kibana_pass }}'
+          roles:
+            - kibana4_server
+    es_roles:
+      file:
+        kibana4_server:
+          cluster:
+            - monitor
+          indices:
+            - names: '.kibana*'
+              privileges:
+                - all
+            - names: '.reporting-*'
+              privileges:
+                - all
+        admin:
+          cluster:
+            - all
+          indices:
+            - names: '*'
+              privileges:
+                - all
+        power_user:
+          cluster:
+            - monitor
+          indices:
+            - names: '*'
+              privileges:
+                - all
+    kibana_version: "4.6"
+    kibana_elasticsearch_url: "http://localhost:9200"
+    openssl_keys_path: /etc/my-ssl/private
+    openssl_certs_path: /etc/my-ssl/certs
+    openssl_default_key_owner: kibana
+    openssl_default_key_group: kibana
+    openssl_default_cert_owner: kibana
+    openssl_default_cert_group: kibana
+    openssl_self_signed:
+     - name: '{{ cluster_name }}'
+       domains: ['{{ ansible_eth0["ipv4"]["address"] }}']
+       country: 'US'
+       state: 'Washington'
+       city: 'Bellevue'
+       organization: 'expedia'
+       unit: 'default'
+       days: 730
+
+  tasks:
+
+    - name: Change the owner of SSL certs
+      file: path=/etc/my-ssl/ state=directory recurse=yes owner=kibana group=kibana mode=0700
+
+    - name: Add Selfsigned cert in kibana.yml
+      shell: echo server.ssl.key:{{' '}}/etc/my-ssl/private/{{cluster_name}}.key >> /opt/kibana/config/kibana.yml
+
+    - name: Add selfsigned cert in kibana.yml
+      shell: echo server.ssl.cert:{{' '}}/etc/my-ssl/certs/{{cluster_name}}.crt >> /opt/kibana/config/kibana.yml
+
+    - name: Add Last configs in kibana.yml. This should be part of role
+      shell: echo shield.encryptionKey:{{' '}}\'{{ ansible_date_time.iso8601_micro | to_uuid }}\' >> /opt/kibana/config/kibana.yml
+
+    - name: Add Last configs in Kibana.yml
+      shell: echo shield.sessionTimeout:{{' '}}3600000 >> /opt/kibana/config/kibana.yml
+
+    - name: Add kibana server password
+      shell: echo elasticsearch.username:{{' '}}\'kibana4-server\' >> /opt/kibana/config/kibana.yml
+
+    - name: Add kibana server password
+      shell: echo elasticsearch.password:{{' '}}\'{{kibana_pass}}\' >> /opt/kibana/config/kibana.yml
+
+    - name: Check if Kibana shield Plugin is installed
+      shell: >
+         /opt/kibana/bin/kibana plugin --list  | grep shield
+      register: shield_installed
+      ignore_errors: yes
+      failed_when: "'ERROR' in shield_installed.stdout"
+      changed_when: False
+
+    - name: Install Kibana shield plugin
+      shell: /opt/kibana/bin/kibana plugin --install kibana/shield/{{ es_version }}
+      when: shield_installed.rc == 1
+
+    - name: Make sure /opt/kibana is owned by kibana
+      file: path=/opt/kibana state=directory recurse=yes owner=kibana group=kibana
+
+    - name: Restart kibana
+      service: name=kibana state=restarted
+
+- hosts: '{{ cluster_name }}_elasticsearch_monitoring'
+  become: yes
+  gather_facts: yes
+  pre_tasks:
+    - name: Stat /usr/share/elasticsearch
+      stat: path=/usr/share/elasticsearch
+      register: p
+
+    - name: Make sure /usr/share/elasticsearch is owned by elasticsearch
+      file: path=/usr/share/elasticsearch state=directory recurse=yes owner=elasticsearch group=elasticsearch
+      when: p.stat.isdir is defined and p.stat.isdir
+
+
+  roles:
+      - ansible-kibana
+      - ansible-elasticsearch
+
+  vars:
+    es_scripts: false
+    es_data_dirs: "{{ all_data | replace('\n', '') | replace(' ', '')}}"
+    es_config: {
+     cluster.name: "{{ cluster_name }}_monitoring",
+     discovery.zen.ping.unicast.hosts: '{{ ansible_eth0["ipv4"]["address"] }}',
+     http.port: 9200,
+     transport.tcp.port: 9300,
+     node.data: true,
+     node.master: true,
+     http.max_content_length: 1024mb,
+     http.cors.enabled: true,
+     http.cors.allow-origin: "/.*/",
+     indices.fielddata.cache.size: 25%,
+     action.disable_delete_all_indices: true,
+     script.inline: true,
+     script.indexed: true,
+     network.host: [_site_,_local_],
+     bootstrap.mlockall: true,
+     marvel.agent.exporters.id1.type: http,
+     marvel.agent.exporters.id1.host: "{{monitoring_host_name | replace('\n', '') | replace(' ', '')}}",
+     shield.authc.realms.native1.type: native,
+     shield.authc.realms.native1.order: 0,
+     shield.authc.anonymous.username: anonymous_user,
+     shield.authc.anonymous.roles: admin,
+     shield.authc.anonymous.authz_exception: true,
+     shield.authc.realms.file1.type: file,
+     shield.authc.realms.file1.order: 1,
+     discovery.zen.ping.multicast.enabled: false,
+     node: {},
+     cluster: {},
+     path: {}
+     }
+    es_templates: false
+    es_http_port: 9200
+    es_instance_name: monitor
+    es_version_lock: false
+    es_version: "2.4.0"
+    es_start_service: true
+    heap_memory: |
+        {% if ansible_memory_mb.real.total/2 > 31000 %}
+            "30g"
+        {% else %}
+            {{ ansible_memory_mb.real.total//2048 }}g
+        {% endif %}
+    es_heap_size: "{{ heap_memory | replace('\n', '') | replace(' ', '')}}"
+    master_group_name: '{{ cluster_name }}_elasticsearch_master'
+    all_masters: |
+             {% set comma = joiner(',') %}
+             {% for host in groups[master_group_name] -%}
+               {{ comma() }}{{ hostvars[host].ansible_default_ipv4.address}}
+             {%- endfor -%}
+    all_data: |
+             {% set comma = joiner(',') %}
+             {% for mounts in ansible_mounts -%}
+                {% if mounts.mount != '/' %}
+                  {{ comma() }}{{ mounts.mount | replace('\n', '') | replace(' ', '') }}
+                {% endif %}
+             {%- endfor -%}
+    monitoring_group_name: '{{ cluster_name }}_elasticsearch_monitoring'
+    monitoring_host_name: |
+              {% if hostvars[groups[monitoring_group_name][0]] is defined %}
+                {{hostvars[groups[monitoring_group_name][0]].ansible_default_ipv4.address}}
+              {% else %}
+                '{{ ansible_eth0["ipv4"]["address"] }}'
+              {% endif %}
+    es_plugins_reinstall: true
+    es_enable_xpack: true
+    es_api_basic_auth_username: es_admin
+    es_api_basic_auth_password: '{{ admin_pass }}'
+    es_plugins:
+       - plugin: shield
+       - plugin: watcher
+       - plugin: license
+       - plugin: marvel-agent
+    es_xpack_features:
+      - shield
+      - watcher
+      - license
+      - marvel-agent
+    es_users:
+      file:
+        es_admin:
+          password: '{{ admin_pass }}'
+          roles:
+            - admin
+        kibana4-server:
+          password: '{{ kibana_pass }}'
+          roles:
+            - kibana4_server
+    es_roles:
+      file:
+        kibana4_server:
+          cluster:
+            - monitor
+          indices:
+            - names: '.kibana*'
+              privileges:
+                - all
+            - names: '.reporting-*'
+              privileges:
+                - all
+        admin:
+          cluster:
+            - all
+          indices:
+            - names: '*'
+              privileges:
+                - all
+        power_user:
+          cluster:
+            - monitor
+          indices:
+            - names: '*'
+              privileges:
+                - all
+    kibana_version: "4.6"
+    kibana_elasticsearch_url: "http://localhost:9200"
+  tasks:
+
+    - name: Check if Kibana Marvel Plugin is installed
+      shell: >
+         /opt/kibana/bin/kibana plugin --list | grep marvel
+      register: marvel_installed
+      ignore_errors: yes
+      failed_when: "'ERROR' in marvel_installed.stdout"
+      changed_when: False
+
+    - name: Install Kibana marvel plugin
+      shell: /opt/kibana/bin/kibana plugin --install elasticsearch/marvel
+      when: marvel_installed.rc == 1
+
+    - name: Make sure /opt/kibana is owned by kibana
+      file: path=/opt/kibana state=directory recurse=yes owner=kibana group=kibana
+
+    - name: Restart kibana
+      service: name=kibana state=restarted

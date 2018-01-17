@@ -1,0 +1,21 @@
+---
+- name: Provision an EC2 Instance
+  hosts: local
+  connection: local
+  gather_facts: False
+  tags: provisioning
+  # Necessary Variables for creating/provisioning the EC2 Instance
+  vars:
+    instance_type: m4.xlarge
+    security_group: nuodb # Change the security group name here
+    image: ami-7172b611 # Change the AMI, from which you want to launch the server
+    region: us-west-2 # Change the Region
+    keypair: ansible # Change the keypair name
+    sm_group: "{{CLUSTER_NAME_ENV}}_SM"
+  tasks:
+- include: ec2_launch_nuodb_sm.yml CLUSTER_NAME_ENV={{CLUSTER_NAME_ENV}} COUNT={{SM_COUNT}}
+- include: create_nuodb_mount_points.yml CLUSTER_NAME_ENV={{CLUSTER_NAME_ENV}}
+- include: ec2_launch_nuodb_te.yml CLUSTER_NAME_ENV={{CLUSTER_NAME_ENV}} COUNT={{TE_COUNT}}
+- include: install_nuodb.yml CLUSTER_NAME_ENV={{CLUSTER_NAME_ENV}} seed={{ groups[[ sm_group ][0]] }}
+
+

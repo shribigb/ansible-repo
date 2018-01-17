@@ -1,0 +1,109 @@
+---
+  - name: Provision an EC2 Instance
+    hosts: local
+    connection: local
+    gather_facts: False
+    tags: provisioning
+    # Necessary Variables for creating/provisioning the EC2 Instance
+    vars:
+      instance_type: m4.xlarge
+      security_group: nuodb # Change the security group name here
+      image: ami-7172b611 # Change the AMI, from which you want to launch the server
+      region: us-west-2 # Change the Region
+      keypair: ansible # Change the keypair name
+      count: "{{COUNT}}"
+      node_iterator: 0
+      volumes:
+              - device_name: /dev/xvdb
+                volume_size: 50
+                volume_type: gp2
+
+    # Task that will be used to Launch/Create an EC2 Instance
+    tasks:
+
+      - name: Create a security group
+        local_action: 
+          module: ec2_group
+          name: "{{ security_group }}"
+          description: Security Group for webserver Servers
+          region: "{{ region }}"
+          vpc_id: vpc-e5588581
+
+          rules:
+            - proto: tcp
+              from_port: 22
+              to_port: 22
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 80
+              to_port: 80
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 61621
+              to_port: 61621
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 7199
+              to_port: 7199
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 7001
+              to_port: 7001
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 61620
+              to_port: 61620
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 9160
+              to_port: 9160
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 7000
+              to_port: 7000
+              cidr_ip: 0.0.0.0/0
+            - proto: tcp
+              from_port: 9042
+              to_port: 9042
+              cidr_ip: 0.0.0.0/0
+          rules_egress:
+            - proto: all
+              cidr_ip: 0.0.0.0/0
+
+
+      - name: Launch the new EC2 Instance
+        local_action: ec2 
+                      instance_type={{ instance_type}} 
+                      image={{ image }} 
+                      wait=true 
+                      region={{ region }} 
+                      keypair={{ keypair }}
+                      count={{ count }}
+                      volumes={{ volumes }}
+                      group={{ security_group }} 
+                      vpc_subnet_id=subnet-06223c5f
+        register: ec2
+
+      - name: Add the newly created EC2 instance(s) to the local host group (located inside the directory)
+        local_action: lineinfile 
+                      dest="/etc/ansible/hosts"
+                      state=present 
+                      regexp='\[{{CLUSTER_NAME_ENV}}_SM\]' 
+                      insertafter="[{{CLUSTER_NAME_ENV}}_SM]" line="[{{CLUSTER_NAME_ENV}}_SM]\n{{ item.private_ip }}\tansible_ssh_private_key_file=/opt/ansible/repos/playbook/ansible.pem\tansible_ssh_user=ec2-user"
+        with_items: ec2.instances
+
+      - name: Wait for SSH to come up
+        local_action: wait_for 
+                      host={{ item.private_ip }} 
+                      port=22 
+                      state=started
+        with_items: ec2.instances
+
+      - name: Add tag to Instance(s)
+        local_action: ec2_tag resource={{ item.id }} region={{ region }} state=present
+        with_items: ec2.instances
+        args:
+          tags:
+            Name: "{{CLUSTER_NAME_ENV}}_{{ item.private_ip }}_SM"
+      - name: Refresh Meta
+        meta: refresh_inventory

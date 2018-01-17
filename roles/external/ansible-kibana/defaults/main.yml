@@ -1,0 +1,10 @@
+---
+kibana_server_port: 5601
+kibana_server_host: "0.0.0.0"
+
+kibana_elasticsearch_url: "http://localhost:9200"
+kibana_major_version: "6.x"
+kibana_version: "6.1.0"
+kibana_enable_xpack: false
+kibana_extra_conf: { }
+kibana_plugin_reinstall: false

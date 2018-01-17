@@ -1,0 +1,29 @@
+- name: get facts
+  hosts: "{{ CLUSTER_NAME_ENV }}_SM"
+  become: yes
+  tasks:
+    - name: Debug 
+      debug: msg="Cluster Name is  {{ CLUSTER_NAME_ENV }} "
+
+    - name: Gather ec2 facts
+      action: ec2_facts
+
+    - name: install xfsprogs 
+      yum: name=xfsprogs state=latest 
+    - name: Unmount filesystem
+      mount: name=/data fstype=xfs state=unmounted
+
+
+- name: make xfs
+  hosts: "{{ CLUSTER_NAME_ENV }}_SM"
+  become: yes
+  roles:
+     - ansible-disk
+  vars:
+      disk_additional_disks:
+      - disk: /dev/xvdb
+        fstype: xfs
+        force: yes
+        mount_options: defaults
+        mount: /data
+

@@ -1,0 +1,28 @@
+- name: mongodb
+  hosts: "{{ cluster_name }}_mongo"
+  become: yes
+  gather_facts: yes
+  pre_tasks:
+    - name: install the latest version of java-1.8
+      yum: name=java-1.8.0-openjdk state=latest
+    - name: correct java version selected
+      alternatives: name=java link=/usr/bin/java path=/usr/lib/jvm/java-1.8.0-openjdk-1.8.0.101-3.b13.24.amzn1.x86_64/jre/bin/java
+  roles:
+    - ansible-mongodb
+  vars:
+
+      ### Authorization settings start ###
+
+      mongodb_security_authorization: "enabled"
+
+      mongodb_user_admin_name: siteUserAdmin
+      mongodb_user_admin_password: passw0rd
+
+      mongodb_root_admin_name: siteRootAdmin
+      mongodb_root_admin_password: passw0rd
+
+      mongodb_root_backup_name: siteBackupAdmin
+      mongodb_root_backup_password: passw0rd
+
+      ### Authorization settings end ###
+

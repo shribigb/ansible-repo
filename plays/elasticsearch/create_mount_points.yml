@@ -1,0 +1,38 @@
+- name: get facts
+  hosts: '{{ cluster_name }}_elasticsearch_data'
+  become: yes
+  tasks:
+    - name: Gather ec2 facts
+      action: ec2_facts
+
+- name: make filesystem
+  hosts: '{{ cluster_name }}_elasticsearch_data'
+  become: yes
+  roles:
+     - ansible-disk
+  vars:
+      disk_additional_disks:
+      - disk: /dev/nvme0n1
+        fstype: ext4
+        force: yes
+        mount_options: defaults
+        mount: /data0
+        part: /dev/nvme0n1p1
+      - disk: /dev/nvme1n1
+        fstype: ext4
+        force: yes
+        mount_options: defaults
+        mount: /data1
+        part: /dev/nvme1n1p1
+      - disk: /dev/nvme2n1
+        fstype: ext4
+        force: yes
+        mount_options: defaults
+        mount: /data2
+        part: /dev/nvme2n1p1
+      - disk: /dev/nvme3n1
+        fstype: ext4
+        force: yes
+        mount_options: defaults
+        mount: /data3
+        part: /dev/nvme3n1p1
