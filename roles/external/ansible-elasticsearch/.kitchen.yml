@@ -10,12 +10,20 @@ provisioner:
   require_ansible_omnibus: false
   require_ansible_source: false
   require_pip: true
-  ansible_version: 2.3.2.0
+  ansible_version: 2.4.3.0
   http_proxy: <%= ENV['HTTP_PROXY'] %>
   https_proxy: <%= ENV['HTTPS_PROXY'] %>
   no_proxy: localhost,127.0.0.1
   ignore_extensions_from_root: [".git",".idea",".kitchen.yml"]
   ignore_paths_from_root: [".git",".idea",".kitchen"]
+  <% if ENV['VERSION'] %>
+  attributes:
+    extra_vars:
+      es_major_version: "<%= ENV['VERSION'] %>"
+      <% if ENV['VERSION'] == '5.x' %>
+      es_version: '5.6.10'
+      <% end %>
+  <% end %>
 
 transport:
   max_ssh_sessions: 6
@@ -27,11 +35,13 @@ platforms:
       privileged: true
       provision_command:
         - apt-get update && apt-get install -y software-properties-common &&  add-apt-repository -y ppa:ansible/ansible
-        - apt-get update && apt-get -y -q install python-apt python-pycurl python-pip
-        - pip install jmespath
+        - apt-get update && apt-get -y -q install python-apt python-pycurl python-pip python-openssl
+        - pip install jmespath pyOpenSSL ndg-httpsclient
         - pip uninstall -y ansible
       use_sudo: false
-      volume: <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+      volume: 
+        - <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+        - /etc # This fixes certain java file actions that check the mount point. Without this adding users fails for some docker storage drivers
   - name: ubuntu-16.04
     driver_config:
       image: dliappis/ubuntu-devopsci:16.04
@@ -43,7 +53,9 @@ platforms:
         - pip install jmespath
         - pip uninstall -y ansible
       use_sudo: false
-      volume: <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+      volume: 
+        - <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+        - /etc # This fixes certain java file actions that check the mount point. Without this adding users fails for some docker storage drivers
       run_command: "/sbin/init"
   - name: debian-8
     driver_config:
@@ -57,7 +69,9 @@ platforms:
         - sed -ri 's/^#?UsePAM .*/UsePAM no/' /etc/ssh/sshd_config
         - pip install jmespath
         - pip uninstall -y ansible
-      volume: <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+      volume: 
+        - <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+        - /etc # This fixes certain java file actions that check the mount point. Without this adding users fails for some docker storage drivers
       use_sudo: false
       run_command: "/sbin/init"
   - name: centos-7
@@ -72,48 +86,39 @@ platforms:
         - yum -y remove ansible
         - yum clean all
         - pip install jmespath
-      volume: <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+      volume: 
+        - <%=ENV['ES_XPACK_LICENSE_FILE']%>:/tmp/license.json
+        - /etc # This fixes certain java file actions that check the mount point. Without this adding users fails for some docker storage drivers
       run_command: "/usr/sbin/init"
       privileged: true
       use_sudo: false
 
 suites:
-  - name: standard-5x
+  - name: oss
     provisioner:
       idempotency_test: true
-      playbook: test/integration/standard.yml
-    run_list:
-    attributes:
-  - name: package-5x
-    run_list:
-    attributes:
+      playbook: test/integration/oss.yml
+  - name: oss-upgrade
     provisioner:
-      playbook: test/integration/package.yml
-  - name: config-5x
-    run_list:
-    attributes:
+      playbook: test/integration/oss-upgrade.yml
+      idempotency_test: false
+  - name: oss-to-xpack-upgrade
     provisioner:
-      playbook: test/integration/config.yml
-  - name: multi-5x
-    run_list:
-    attributes:
+      playbook: test/integration/oss-to-xpack-upgrade.yml
+      idempotency_test: false
+  - name: xpack
+    provisioner:
+      playbook: test/integration/xpack.yml
+      idempotency_test: true
+  - name: xpack-upgrade
+    provisioner:
+      playbook: test/integration/xpack-upgrade.yml
+      idempotency_test: false
+  - name: multi
     provisioner:
       playbook: test/integration/multi.yml
       idempotency_test: true
-  - name: xpack-5x
-    run_list:
-    attributes:
-    provisioner:
-      playbook: test/integration/xpack.yml
-  - name: xpack-standard-5x
-    run_list:
-    attributes:
-    provisioner:
-      playbook: test/integration/xpack-standard.yml
-      idempotency_test: true
   - name: issue-test
-    run_list:
-    attributes:
     provisioner:
       playbook: test/integration/issue-test.yml
       idempotency_test: false
