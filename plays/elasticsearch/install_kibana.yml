@@ -11,5 +11,3 @@
       kibana_elasticsearch_password: '{{ kibana_pass }}'
       kibana_major_version: "6.x"
       kibana_version: "6.1.0"
-      kibana_enable_xpack: true
-      kibana_enable_xpack: true

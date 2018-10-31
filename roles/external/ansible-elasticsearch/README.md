@@ -33,7 +33,7 @@ The simplest configuration therefore consists of:
 - name: Simple Example
   hosts: localhost
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
       es_instance_name: "node1"
 ```
 
@@ -107,7 +107,7 @@ The following illustrates applying configuration parameters to an Elasticsearch 
 - name: Elasticsearch with custom configuration
   hosts: localhost
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
   vars:
     es_instance_name: "node1"
     es_data_dirs:
@@ -147,7 +147,7 @@ A more complex example:
 - name: Elasticsearch with custom configuration
   hosts: localhost
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
   vars:
     es_instance_name: "node1"
     es_data_dirs:
@@ -191,7 +191,7 @@ An example of a two server deployment is shown below.  The first server holds th
 ```yaml
 - hosts: master_nodes
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
   vars:
     es_instance_name: "node1"
     es_heap_size: "1g"
@@ -212,19 +212,19 @@ An example of a two server deployment is shown below.  The first server holds th
 
 - hosts: data_nodes
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
   vars:
     es_instance_name: "node1"
     es_data_dirs: 
       - "/opt/elasticsearch"
     es_config:
+      cluster.name: "test-cluster"
       discovery.zen.ping.unicast.hosts: "elastic02:9300"
       http.port: 9200
       transport.tcp.port: 9300
       node.data: true
       node.master: false
       bootstrap.memory_lock: false
-      cluster.name: "test-cluster"
     es_scripts: false
     es_templates: false
     es_version_lock: false
@@ -235,7 +235,7 @@ An example of a two server deployment is shown below.  The first server holds th
     
 - hosts: data_nodes
   roles:
-    - role: elasticsearch
+    - role: elastic.elasticsearch
   vars:
     es_instance_name: "node2"
     es_api_port: 9201
@@ -401,6 +401,8 @@ In addition to es_config, the following parameters allow the customization of th
 * ```es_max_open_files``` the maximum file descriptor number that can be opened by this process. Defaults to 65536.
 * ```es_max_threads``` the maximum number of threads the process can start. Defaults to 2048 (the minimum required by elasticsearch).
 * ```es_debian_startup_timeout``` how long Debian-family SysV init scripts wait for the service to start, in seconds. Defaults to 10 seconds.
+* ```es_use_repository``` Setting this to `false` will stop Ansible from using the official Elastic package repositories.
+* ```es_custom_package_url``` the URL to the rpm or deb package for Ansible to install. When using this you will also need to set `es_use_repository: false` and make sure that the `es_version` matches the version being installed from your custom URL. E.g. `es_custom_package_url: https://downloads.example.com/elasticsearch.rpm`
 
 Earlier examples illustrate the installation of plugins using `es_plugins`.  For officially supported plugins no version or source delimiter is required. The plugin script will determine the appropriate plugin version based on the target Elasticsearch version.  For community based plugins include the full url.  This approach should NOT be used for the X-Pack plugin.  See X-Pack below for details here.
  

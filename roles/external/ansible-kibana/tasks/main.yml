@@ -23,18 +23,61 @@
     mode: 0644
   notify: restart kibana
 
-- name: Check if X-pack is already installed
-  shell: "/usr/share/kibana/bin/kibana-plugin list"
-  register: kibana_plugins
+- name: set fact list_command check for x-pack
+  set_fact: list_command="| grep -vE 'x-pack'"
+  when: kibana_plugins_reinstall
 
-- debug: var=kibana_plugins
+#List currently installed plugins. We have to list the directories as the list commmand fails if the ES version is different than the plugin version.
+- name: Check installed elasticsearch plugins
+  become: yes
+  shell: "ls /usr/share/kibana/plugins {{list_command}}"
+  register: installed_plugins
+  changed_when: False
+  ignore_errors: yes
+
+#if es_plugins_reinstall is set to true we remove ALL plugins
+- name: set fact plugins_to_remove to install_plugins.stdout_lines
+  set_fact: plugins_to_remove="{{ installed_plugins.stdout_lines | default([]) }}"
+  when: kibana_plugins_reinstall
+
+- name: set fact plugins_to_install to kibana_plugins
+  set_fact: plugins_to_install="{{ installed_plugins.stdout_lines | default([]) }}"
+  when: kibana_plugins_reinstall
+
+- name: Remove Kibana plugins
+  become: yes
+  command: "/usr/share/kibana/bin/kibana-plugin remove {{item}} "
+  with_items: "{{ plugins_to_remove | default([]) }}"
+  notify: restart kibana
+  register: plugin_removed
+  when: kibana_plugins_reinstall
+
+- name: Re/Install plugins
+  become: yes
+  command: "/usr/share/kibana/bin/kibana-plugin install {{item}} "
+  register: plugin_installed
+  changed_when: plugin_installed.rc == 0
+  with_items: "{{ plugins_to_install }}"
+  when: item in plugins_to_install
+  notify: restart kibana
 
 - set_fact:
-    kibana_xpack_with_version : 'x-pack@{{kibana_version}}'
+    kibana_xpack_with_version : 'x-pack'
+
+- name: Remove X-pack if kibana_plugins_reinstall
+  shell: "/usr/share/kibana/bin/kibana-plugin remove x-pack"
+  when: kibana_enable_xpack is defined and kibana_enable_xpack == true and ( kibana_xpack_with_version | string not in plugins_to_install or kibana_plugin_reinstall == true )
+  notify: restart kibana
 
 - name: Install X-pack
   shell: "/usr/share/kibana/bin/kibana-plugin install x-pack"
-  when: kibana_enable_xpack is defined and kibana_enable_xpack == true and ( kibana_xpack_with_version | string not in kibana_plugins.stdout_lines or kibana_plugin_reinstall == true )
+  when: kibana_enable_xpack is defined and kibana_enable_xpack == true and ( kibana_xpack_with_version | string not in plugins_to_install or kibana_plugin_reinstall == true )
+  notify: restart kibana
+  async: 1000
+  register: install_xpack
+  poll: 0
+  ignore_errors: yes
+
 
 - name: Make sure Kibana home dir has right permissions
   file:
@@ -42,3 +85,4 @@
     state: directory
     owner: kibana
     group: kibana
+    recurse: yes
